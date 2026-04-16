@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid cols-3 gap mt">
+  <div class="card">
+    <h3>Sources</h3>
+    <p class="big">{{ stats.total_sources }}</p>
+  </div>
+  <div class="card">
+    <h3>Drafts</h3>
+    <p class="big">{{ stats.total_drafts }}</p>
+  </div>
+  <div class="card">
+    <h3>Style Samples</h3>
+    <p class="big">{{ stats.total_style_samples }}</p>
+  </div>
+</section>
+
+{% if error %}
+<div class="alert error mt" role="alert">{{ error }}</div>
+{% endif %}
+{% if message %}
+<div class="alert success mt" role="status">{{ message }}</div>
+{% endif %}
+
+<section class="card mt">
+  <h2>Create New Draft Set</h2>
+  <p class="muted">Input URL, text idea, image, or any combination. The app extracts insight and generates ranked English drafts.</p>
+  <form action="/sources/create" method="post" enctype="multipart/form-data">
+    <label for="source-url">URL</label>
+    <input type="url" id="source-url" name="url" placeholder="https://example.com/article" />
+
+    <label for="source-text">Idea / Notes</label>
+    <textarea id="source-text" name="text_input" rows="8" placeholder="Paste your thoughts, notes, or article snippets..."></textarea>
+
+    <label for="source-image">Image (optional)</label>
+    <input type="file" id="source-image" name="image_file" accept="image/*" />
+
+    <button type="submit">Generate Drafts</button>
+  </form>
+</section>
+
+<section class="card mt">
+  <h2>Recent Drafts</h2>
+  {% if drafts %}
+  <div class="table-wrap">
+    <table>
+      <caption class="sr-only">Recent drafts with scores</caption>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Tone</th>
+          <th>Overall</th>
+          <th>Preview</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in drafts %}
+        <tr>
+          <td><a href="/sources/{{ d.source_id }}">#{{ d.id }}</a></td>
+          <td>{{ d.post_type }}</td>
+          <td>{{ d.tone }}</td>
+          <td>{{ "%.2f"|format(d.overall) }}</td>
+          <td>{{ d.content[:110] }}{% if d.content|length > 110 %}...{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No drafts yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

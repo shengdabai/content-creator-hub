@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card mt">
+  <h2>Source #{{ source.id }}</h2>
+  <div class="kv"><strong>Type:</strong> {{ source.source_type }}</div>
+  <div class="kv"><strong>Title:</strong> {{ source.title }}</div>
+  {% if source.url %}
+  <div class="kv"><strong>URL:</strong> <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a></div>
+  {% endif %}
+  {% if source.image_path %}
+  <div class="kv">
+    <strong>Image:</strong><br />
+    <img src="/uploads/{{ source.image_path.split('/')[-1] }}" alt="Uploaded image for {{ source.title }}" class="source-image" loading="lazy" />
+  </div>
+  {% endif %}
+  {% if source.raw_input %}
+  <details class="mt-small">
+    <summary>Original Text Input</summary>
+    <pre>{{ source.raw_input }}</pre>
+  </details>
+  {% endif %}
+</section>
+
+<section class="card mt">
+  <h2>Extracted Insight</h2>
+  {% if insight %}
+  <div class="kv"><strong>Core Claim:</strong> {{ insight.core_claim }}</div>
+  <div class="kv"><strong>Novelty:</strong> {{ insight.novelty }}</div>
+  <div class="kv"><strong>Audience Value:</strong> {{ insight.audience_value }}</div>
+  <div class="kv"><strong>Key Points:</strong> {{ insight.key_points|join(" | ") }}</div>
+  <div class="kv"><strong>Evidence:</strong> {{ insight.evidence|join(" | ") }}</div>
+  <div class="kv"><strong>Tweetable Angles:</strong> {{ insight.tweetable_angles|join(" | ") }}</div>
+  <div class="kv"><strong>Risk Flags:</strong> {{ insight.risk_flags|join(" | ") }}</div>
+  {% else %}
+  <p class="muted">No insight extracted yet.</p>
+  {% endif %}
+</section>
+
+<section class="card mt">
+  <h2>Generated Drafts (Ranked)</h2>
+  {% if drafts %}
+  <div class="grid cols-2 gap">
+    {% for d in drafts %}
+    <article class="draft-card">
+      <div class="row between center">
+        <div>
+          <span class="pill">{{ d.post_type }}</span>
+          <span class="pill tone">{{ d.tone }}</span>
+        </div>
+        <div class="score">{{ "%.2f"|format(d.overall or 0) }}</div>
+      </div>
+      <pre id="draft-{{ d.id }}">{{ d.content }}</pre>
+      <div class="scores muted">
+        style {{ "%.1f"|format(d.style_match or 0) }} |
+        clarity {{ "%.1f"|format(d.clarity or 0) }} |
+        attention {{ "%.1f"|format(d.attention or 0) }} |
+        novelty {{ "%.1f"|format(d.novelty or 0) }} |
+        risk {{ "%.1f"|format(d.risk or 0) }} |
+        engagement {{ "%.1f"|format(d.engagement or 0) }}
+      </div>
+      <div class="muted">{{ d.rationale }}</div>
+      <button type="button" onclick="copyDraft('draft-{{ d.id }}', this)">Copy</button>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">No drafts generated.</p>
+  {% endif %}
+</section>
+
+<script>
+function copyDraft(elementId, btn) {
+  var text = document.getElementById(elementId).innerText;
+  navigator.clipboard.writeText(text).then(function() {
+    var orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.classList.add('copy-success');
+    setTimeout(function() {
+      btn.textContent = orig;
+      btn.classList.remove('copy-success');
+    }, 1500);
+  });
+}
+</script>
+{% endblock %}

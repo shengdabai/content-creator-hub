@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card mt">
+  <h2>Draft Library</h2>
+  <form method="get" action="/drafts" class="row gap-small center">
+    <label for="draft-search" class="sr-only">Search drafts</label>
+    <input type="text" id="draft-search" name="q" value="{{ q }}" placeholder="Search by content/type..." />
+    <label for="draft-sort" class="sr-only">Sort order</label>
+    <select id="draft-sort" name="sort">
+      <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest first</option>
+      <option value="score" {% if sort == 'score' %}selected{% endif %}>Highest score</option>
+    </select>
+    <button type="submit">Search</button>
+  </form>
+</section>
+
+<section class="card mt">
+  {% if drafts %}
+  <div class="table-wrap">
+    <table>
+      <caption class="sr-only">Draft library with scores</caption>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Source</th>
+          <th>Type</th>
+          <th>Tone</th>
+          <th>Overall</th>
+          <th>Preview</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in drafts %}
+        <tr>
+          <td>#{{ d.id }}</td>
+          <td><a href="/sources/{{ d.source_id }}">{{ d.source_title or "source" }}</a></td>
+          <td>{{ d.post_type }}</td>
+          <td>{{ d.tone }}</td>
+          <td>{{ "%.2f"|format(d.overall) }}</td>
+          <td>{{ d.content[:130] }}{% if d.content|length > 130 %}...{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">No drafts found.</p>
+  {% endif %}
+</section>
+{% endblock %}

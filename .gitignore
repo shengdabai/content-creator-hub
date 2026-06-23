@@ -1,7 +1,10 @@
 # Environment
 .env
+.env.*
 .env.local
 .env.*.local
+!.env.example
+!.env.*.example
 
 # Python
 __pycache__/
@@ -31,25 +34,22 @@ Thumbs.db
 .vscode/
 .idea/
 
-# OMC
+# OMC / local agent state
 .omc/
+.codex/
+.claude/local/
 
 # Generated
 output/
+drafts/
 post_history.jsonl
 youtube_token.json
-# Codex governance: local secrets and machine state
-.env
-.env.*
-!.env.example
-!.env.*.example
+youtube_credentials.json
+
+# Secrets / certs
 *.pem
 *.p12
 *.pfx
 id_rsa
 id_dsa
 .npmrc
-.DS_Store
-.omc/
-.codex/
-.claude/local/

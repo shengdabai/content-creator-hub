@@ -1,5 +1,6 @@
 import json
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,7 +19,18 @@ from app.services.ingest import extract_web_content, image_to_data_url, normaliz
 from app.services.style_engine import build_style_profile
 
 
-app = FastAPI(title=APP_NAME)
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    db.init_db()
+    db._migrate_score_columns()
+    db.get_or_create_default_profile()
+    yield
+
+
+app = FastAPI(title=APP_NAME, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
@@ -30,13 +42,6 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    db.init_db()
-    db._migrate_score_columns()
-    db.get_or_create_default_profile()
 
 
 def _split_samples_from_text(text: str) -> List[str]:
@@ -146,6 +151,13 @@ async def create_source(
 
         if image_file and image_file.filename:
             original_name = Path(image_file.filename).name
+            ext = Path(original_name).suffix.lower()
+            if ext not in ALLOWED_IMAGE_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unsupported image type. Allowed: "
+                    + ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS)),
+                )
             safe_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}_{original_name}"
             target = UPLOAD_DIR / safe_name
             data = await image_file.read()

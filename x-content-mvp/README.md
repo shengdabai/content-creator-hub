@@ -45,7 +45,7 @@ X-Content-Creation-MVP/
 ## 3. Setup
 
 ```bash
-cd /Users/adam/Desktop/X-Content-Creation-MVP
+cd x-content-mvp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -85,3 +85,5 @@ http://127.0.0.1:8000
 - Uploaded images are stored in `data/uploads/`.
 - Data is stored in SQLite at `data/x_content_mvp.db`.
 - If AI response fails, the app falls back to deterministic heuristics so the product remains usable.
+- The AI client calls an OpenAI-compatible Chat Completions endpoint directly via `requests` (no `openai` package dependency). Point it at any compatible gateway with `OPENAI_BASE_URL`.
+- Uploaded files are restricted to image types (`.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`); other extensions are rejected.

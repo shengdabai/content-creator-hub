@@ -1,3 +1,9 @@
 .env
 __pycache__/
 *.pyc
+
+# Generated at runtime
+drafts/
+output/
+youtube_credentials.json
+youtube_token.json

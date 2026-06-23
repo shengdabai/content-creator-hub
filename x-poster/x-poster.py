@@ -27,7 +27,7 @@ if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
-MODEL = os.environ["MODEL_ID"]
+MODEL = os.environ.get("MODEL_ID", "claude-opus-4-5")
 WORKDIR = Path.cwd()
 DRAFTS_DIR = WORKDIR / "drafts"
 DRAFTS_DIR.mkdir(exist_ok=True)
@@ -130,8 +130,17 @@ TOOLS = [
 
 
 def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo shutdown", "sudo reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
+    # NOTE: this is a best-effort denylist, NOT a security sandbox. The bash
+    # tool executes commands proposed by an AI model with shell=True; treat all
+    # input as untrusted and do not run this agent on machines holding secrets.
+    dangerous = [
+        "rm -rf /", "rm -rf ~", "rm -rf *", "rm -rf .",
+        "sudo ", "shutdown", "reboot", "halt", "mkfs",
+        "> /dev/", "dd if=", ":(){", "chmod -r 777 /", "curl ", "wget ",
+        "/etc/passwd", "/etc/shadow", "~/.ssh", ".env", "history -c",
+    ]
+    lowered = command.lower()
+    if any(d in lowered for d in dangerous):
         return "Error: 危险命令已阻止"
     try:
         r = subprocess.run(command, shell=True, cwd=WORKDIR,

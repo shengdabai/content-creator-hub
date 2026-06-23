@@ -25,13 +25,17 @@ load_dotenv(override=True)
 if os.getenv("ANTHROPIC_BASE_URL"):
     os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
-# Ensure edge-tts, ffmpeg etc. are in PATH
-for p in ["/Users/adam/Library/Python/3.9/bin", "/opt/homebrew/bin", "/usr/local/bin"]:
-    if p not in os.environ.get("PATH", ""):
+# Ensure edge-tts, ffmpeg etc. are in PATH.
+# Common install locations plus any extra entries the user configures
+# via the PATH_EXTRA env var (colon-separated). No machine-specific paths
+# are hardcoded — set PATH_EXTRA in your .env if your tools live elsewhere.
+_path_extra = [p for p in os.getenv("PATH_EXTRA", "").split(":") if p]
+for p in _path_extra + ["/opt/homebrew/bin", "/usr/local/bin"]:
+    if p and p not in os.environ.get("PATH", ""):
         os.environ["PATH"] = os.environ.get("PATH", "") + ":" + p
 
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
-MODEL = os.environ["MODEL_ID"]
+MODEL = os.environ.get("MODEL_ID", "claude-opus-4-5")
 WORKDIR = Path.cwd()
 OUTPUT_DIR = WORKDIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -147,8 +151,19 @@ TOOLS = [
 
 
 def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo shutdown", "sudo reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
+    # NOTE: this is a best-effort denylist, NOT a security sandbox. The bash
+    # tool executes commands proposed by an AI model with shell=True; treat all
+    # input as untrusted and do not run this agent on machines holding secrets.
+    # ffmpeg / ffprobe / edge-tts are intentionally allowed (the video pipeline
+    # needs them), so only clearly destructive / exfiltration patterns are blocked.
+    dangerous = [
+        "rm -rf /", "rm -rf ~", "rm -rf *", "rm -rf .",
+        "sudo ", "shutdown", "reboot", "halt", "mkfs",
+        "> /dev/", "dd if=", ":(){", "chmod -r 777 /",
+        "/etc/passwd", "/etc/shadow", "~/.ssh", "history -c",
+    ]
+    lowered = command.lower()
+    if any(d in lowered for d in dangerous):
         return "Error: 危险命令已阻止"
     try:
         r = subprocess.run(command, shell=True, cwd=WORKDIR,

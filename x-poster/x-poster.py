@@ -2,12 +2,14 @@
 """
 X/Twitter Poster Agent - 自动编写内容并发布到 X
 
-工具: bash, read_file, write_file, post_tweet, post_thread, get_my_tweets
+工具: read_file, write_file, post_tweet, post_thread, get_my_tweets
 """
 
 import os
 import json
-import subprocess
+import stat
+import sys
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -30,7 +32,10 @@ client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 MODEL = os.environ.get("MODEL_ID", "claude-opus-4-5")
 WORKDIR = Path.cwd()
 DRAFTS_DIR = WORKDIR / "drafts"
-DRAFTS_DIR.mkdir(exist_ok=True)
+if DRAFTS_DIR.exists() and (DRAFTS_DIR.is_symlink() or not DRAFTS_DIR.is_dir()):
+    raise RuntimeError(f"Unsafe drafts directory: {DRAFTS_DIR}")
+DRAFTS_DIR.mkdir(mode=0o700, exist_ok=True)
+MAX_DRAFT_BYTES = 100_000
 
 SYSTEM = f"""你是一个专业的 X/Twitter 内容创作 agent，工作目录: {WORKDIR}
 
@@ -64,17 +69,8 @@ Thread 写作技巧:
 
 TOOLS = [
     {
-        "name": "bash",
-        "description": "执行 shell 命令",
-        "input_schema": {
-            "type": "object",
-            "properties": {"command": {"type": "string"}},
-            "required": ["command"],
-        },
-    },
-    {
         "name": "read_file",
-        "description": "读取文件内容",
+        "description": "只读取 drafts/ 目录下的单个草稿文件",
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -83,7 +79,7 @@ TOOLS = [
     },
     {
         "name": "write_file",
-        "description": "写入文件，用于保存草稿等",
+        "description": "只写入 drafts/ 目录下的单个草稿文件",
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -130,40 +126,142 @@ TOOLS = [
 
 
 def run_bash(command: str) -> str:
-    # NOTE: this is a best-effort denylist, NOT a security sandbox. The bash
-    # tool executes commands proposed by an AI model with shell=True; treat all
-    # input as untrusted and do not run this agent on machines holding secrets.
-    dangerous = [
-        "rm -rf /", "rm -rf ~", "rm -rf *", "rm -rf .",
-        "sudo ", "shutdown", "reboot", "halt", "mkfs",
-        "> /dev/", "dd if=", ":(){", "chmod -r 777 /", "curl ", "wget ",
-        "/etc/passwd", "/etc/shadow", "~/.ssh", ".env", "history -c",
-    ]
-    lowered = command.lower()
-    if any(d in lowered for d in dangerous):
-        return "Error: 危险命令已阻止"
+    """Compatibility stub: shell execution is intentionally disabled."""
+    return "Error: shell tool is disabled"
+
+
+def _draft_filename(path: str) -> str:
+    if not isinstance(path, str) or not path.strip() or "\x00" in path:
+        raise ValueError("Draft path must be a non-empty string")
+    raw = Path(path)
+    if raw.is_absolute():
+        if raw.parent != DRAFTS_DIR:
+            raise ValueError("Draft path must be directly inside drafts/")
+        name = raw.name
+    else:
+        parts = raw.parts
+        if len(parts) == 2 and parts[0] == DRAFTS_DIR.name:
+            name = parts[1]
+        elif len(parts) == 1:
+            name = parts[0]
+        else:
+            raise ValueError("Draft path must be drafts/<filename>")
+    lowered = name.lower()
+    secret_name = (
+        lowered.startswith(".")
+        or lowered in {"auth.json", ".npmrc"}
+        or lowered.startswith("id_rsa")
+        or lowered.startswith("credentials.")
+        or lowered.startswith("secrets.")
+        or lowered.endswith((".key", ".pem"))
+    )
+    if name in {".", ".."} or secret_name:
+        raise ValueError("Hidden, secret, and credential filenames are not allowed")
+    return name
+
+
+def _open_drafts_dir() -> int:
+    required_dir_fd = (os.open, os.stat, os.unlink, os.rename)
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or any(function not in os.supports_dir_fd for function in required_dir_fd)
+    ):
+        raise RuntimeError("Platform lacks required no-follow draft file operations")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    return os.open(DRAFTS_DIR, flags)
+
+
+def _validate_regular_single_link(file_stat: os.stat_result) -> None:
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("Draft must be a regular file")
+    if file_stat.st_nlink != 1:
+        raise ValueError("Hard-linked drafts are not allowed")
+
+
+def _atomic_replace(directory_fd: int, source: str, destination: str) -> None:
+    os.rename(source, destination, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+
+
+def _write_draft_file(path: str, content: str) -> Path:
+    if not isinstance(content, str):
+        raise ValueError("Draft content must be text")
+    payload = content.encode("utf-8")
+    if len(payload) > MAX_DRAFT_BYTES:
+        raise ValueError(f"Draft exceeds {MAX_DRAFT_BYTES} bytes")
+    name = _draft_filename(path)
+    directory_fd = _open_drafts_dir()
+    temp_name = f".{name}.{uuid.uuid4().hex}.tmp"
+    temp_fd = None
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR,
-                           capture_output=True, text=True, timeout=60)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else "(no output)"
-    except subprocess.TimeoutExpired:
-        return "Error: 超时 (60s)"
+        try:
+            existing = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            _validate_regular_single_link(existing)
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        temp_fd = os.open(temp_name, flags, 0o600, dir_fd=directory_fd)
+        view = memoryview(payload)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = None
+        _atomic_replace(directory_fd, temp_name, name)
+    except Exception:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        try:
+            os.unlink(temp_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(directory_fd)
+    return DRAFTS_DIR / name
 
 
 def run_read_file(path: str) -> str:
     try:
-        return (WORKDIR / path).read_text()[:50000]
+        name = _draft_filename(path)
+        directory_fd = _open_drafts_dir()
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+            file_fd = os.open(name, flags, dir_fd=directory_fd)
+            try:
+                file_stat = os.fstat(file_fd)
+                _validate_regular_single_link(file_stat)
+                if file_stat.st_size > MAX_DRAFT_BYTES:
+                    raise ValueError(f"Draft exceeds {MAX_DRAFT_BYTES} bytes")
+                chunks = []
+                remaining = MAX_DRAFT_BYTES + 1
+                while remaining:
+                    chunk = os.read(file_fd, min(65536, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                payload = b"".join(chunks)
+                if len(payload) > MAX_DRAFT_BYTES:
+                    raise ValueError(f"Draft exceeds {MAX_DRAFT_BYTES} bytes")
+                return payload.decode("utf-8")
+            finally:
+                os.close(file_fd)
+        finally:
+            os.close(directory_fd)
     except Exception as e:
         return f"Error: {e}"
 
 
 def run_write_file(path: str, content: str) -> str:
     try:
-        p = WORKDIR / path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
-        return f"已写入 {len(content)} 字节到 {path}"
+        draft_path = _write_draft_file(path, content)
+        return f"已写入 {len(content.encode('utf-8'))} 字节到 {draft_path}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -206,9 +304,40 @@ def log_tweet(tweet_id: str, text: str, is_thread=False, thread_index=0):
 def _save_draft(content, draft_type="tweet") -> str:
     """保存草稿文件，返回路径"""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    draft_path = DRAFTS_DIR / f"{draft_type}_{ts}.txt"
-    draft_path.write_text(content)
+    draft_path = _write_draft_file(f"{draft_type}_{ts}_{uuid.uuid4().hex}.txt", content)
     return str(draft_path)
+
+
+def _contains_unsafe_terminal_text(content: str) -> bool:
+    bidi_controls = {
+        "\u061c", "\u200e", "\u200f",
+        "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+        "\u2066", "\u2067", "\u2068", "\u2069",
+    }
+    for character in content:
+        codepoint = ord(character)
+        if (codepoint < 0x20 and character not in {"\n", "\t"}):
+            return True
+        if 0x7F <= codepoint <= 0x9F or character in bidi_controls:
+            return True
+    return False
+
+
+def _confirm_publish(kind: str, content: str) -> bool:
+    """Require a human at a real terminal to approve the exact rendered content."""
+    if _contains_unsafe_terminal_text(content):
+        print("Error: content contains unsafe terminal control characters; publishing blocked.")
+        return False
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return False
+    print(f"\n===== {kind} 待发布完整内容 =====")
+    print(content)
+    print("===== 内容结束 =====")
+    try:
+        answer = input("请输入 PUBLISH 确认发布：")
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer.strip() == "PUBLISH"
 
 
 def _try_api_post(text: str):
@@ -226,6 +355,11 @@ def _try_api_post(text: str):
 def run_post_tweet(text: str) -> str:
     if len(text) > 280:
         return f"Error: 推文超过 280 字符 (当前 {len(text)} 字符)"
+
+    if not _confirm_publish("单条推文", text):
+        draft_path = _save_draft(text, "tweet")
+        log_tweet("draft", text)
+        return f"发布已取消，草稿已保存: {draft_path}"
 
     # 尝试 API 发布
     tweet_id = _try_api_post(text)
@@ -249,6 +383,13 @@ def run_post_thread(tweets: list) -> str:
         if len(t) > 280:
             return f"Error: 第 {i+1} 条推文超过 280 字符 ({len(t)} 字符)"
 
+    thread_text = "\n\n---\n\n".join(f"[{i+1}/{len(tweets)}]\n{t}" for i, t in enumerate(tweets))
+    if not _confirm_publish("Thread", thread_text):
+        draft_path = _save_draft(thread_text, "thread")
+        for i, t in enumerate(tweets):
+            log_tweet("draft", t, is_thread=True, thread_index=i)
+        return f"发布已取消，草稿已保存: {draft_path}"
+
     # 尝试 API 发布
     x, err = get_x_client()
     api_ok = err is None
@@ -270,7 +411,6 @@ def run_post_thread(tweets: list) -> str:
             api_ok = False
 
     # API 失败，保存草稿
-    thread_text = "\n\n---\n\n".join(f"[{i+1}/{len(tweets)}]\n{t}" for i, t in enumerate(tweets))
     draft_path = _save_draft(thread_text, "thread")
     for i, t in enumerate(tweets):
         log_tweet("draft", t, is_thread=True, thread_index=i)
@@ -308,7 +448,6 @@ def run_get_my_tweets(count: int = 5) -> str:
 
 def execute_tool(name: str, args: dict) -> str:
     dispatch = {
-        "bash": lambda: run_bash(args["command"]),
         "read_file": lambda: run_read_file(args["path"]),
         "write_file": lambda: run_write_file(args["path"], args["content"]),
         "post_tweet": lambda: run_post_tweet(args["text"]),
